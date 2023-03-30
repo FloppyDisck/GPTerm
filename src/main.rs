@@ -24,6 +24,12 @@ use tui::{
 pub trait Window {
     type InputReturn;
 
+    fn update<B: Backend>(&mut self, f: &mut Frame<B>) {
+        self.update_size(f.size());
+        self.draw(f);
+    }
+    // Handle screen updates, useful when caching
+    fn update_size(&mut self, size: Rect) {}
     // Handle the screen writing
     fn draw<B: Backend>(&self, f: &mut Frame<B>);
     // Handle the input handling and processing
@@ -62,7 +68,7 @@ impl App {
         let mut clipboard = Clipboard::new().unwrap();
 
         loop {
-            terminal.draw(|f| self.draw(f)).unwrap();
+            terminal.draw(|f| self.update(f)).unwrap();
             if let Event::Key(key) = event::read()? {
                 if self.input(&key, &mut clipboard) {
                     break;
@@ -76,6 +82,14 @@ impl App {
 
 impl Window for App {
     type InputReturn = bool;
+
+    fn update_size(&mut self, size: Rect) {
+        match &self.view_state {
+            ViewState::Chats => self.chats.update_size(size),
+            ViewState::Settings => self.settings.update_size(size),
+            ViewState::NewChat => self.creator.update_size(size),
+        }
+    }
 
     fn draw<B: Backend>(&self, f: &mut Frame<B>) {
         match &self.view_state {

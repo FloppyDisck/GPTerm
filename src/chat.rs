@@ -8,6 +8,7 @@ use async_openai::{
     Client,
 };
 use crossterm::event::{KeyCode, KeyEvent};
+use tui::layout::Rect;
 use tui::{
     backend::Backend,
     layout::{Constraint, Corner, Direction, Layout},
@@ -42,13 +43,23 @@ fn assistant_msg(msg: String) -> Message {
     }
 }
 
+enum MessageContent {
+    Sender(Role),
+    Line(String),
+    Divider,
+}
+
 pub struct Chat {
     // Chat title
     title: String,
     // Message history
-    history: Vec<Message>,
-    // Message cursor
-    selected_message: usize,
+    messages: Vec<Message>,
+    // Used for storing preprocessed messages
+    wrapped_messages: Vec<MessageContent>,
+    // Means the offset of the currently shown chat
+    message_offset: usize,
+    // Last known height, this will be used for reprocessing the chats
+    last_size: Rect,
     // Prompt being written
     prompt: TextPrompt,
     // Used to lock the prompt when the API is loading a response
@@ -62,26 +73,47 @@ impl Default for Chat {
     }
 }
 
+fn wrapped_msg(msg: &Message, size: &Rect) -> Vec<MessageContent> {
+    let mut msgs = vec![];
+
+    msgs.append(&mut vec![
+        MessageContent::Divider,
+        MessageContent::Sender(msg.role.clone()),
+    ]);
+
+    for line in textwrap::wrap(&msg.content, (size.width - 4) as usize) {
+        msgs.push(MessageContent::Line(line.to_string()));
+    }
+
+    msgs
+}
+
 impl Chat {
     fn new(name: String, system: Option<String>) -> Self {
-        let mut history = vec![];
+        let mut messages = vec![];
 
         if let Some(system) = system {
-            history.push(system_msg(system));
+            messages.push(system_msg(system));
         }
 
         Self {
             title: name,
-            history,
-            selected_message: 0,
+            messages,
+            // We avoid splitting them since we will init this when we draw
+            // and last_height != height
+            wrapped_messages: vec![],
+            message_offset: 0,
+            last_size: Rect::default(),
             prompt: TextPrompt::new(),
             loading: false,
         }
     }
 
     fn new_message(&mut self, message: Message) {
-        self.history.push(message);
-        self.selected_message = 0;
+        self.wrapped_messages
+            .append(&mut wrapped_msg(&message, &self.last_size));
+        self.messages.push(message);
+        self.message_offset = 0;
     }
 
     fn user(&mut self) {
@@ -90,18 +122,32 @@ impl Chat {
     }
 
     fn scroll_up(&mut self) {
-        if self.selected_message < self.history.len().saturating_sub(1) {
-            self.selected_message += 1;
+        if self.message_offset < self.wrapped_messages.len().saturating_sub(1) {
+            self.message_offset += 1;
         }
     }
 
     fn scroll_down(&mut self) {
-        self.selected_message = self.selected_message.saturating_sub(1);
+        self.message_offset = self.message_offset.saturating_sub(1);
+    }
+
+    fn update_box(&mut self, size: Rect) {
+        if size != self.last_size {
+            self.last_size = size;
+
+            let wrap = &mut self.wrapped_messages;
+            for msg in self.messages.iter() {
+                wrap.append(&mut wrapped_msg(msg, &size))
+            }
+
+            self.message_offset = self.message_offset.min(wrap.len().saturating_sub(1));
+        }
     }
 }
 
 pub struct Chats {
     client: Client,
+    // Used for ChatGPT
     chats: Vec<Chat>,
     selected_chat: usize,
     pub writing: bool,
@@ -112,7 +158,7 @@ impl Chats {
         Self {
             // TODO: improve this
             client: Client::new()
-                .with_api_key("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"),
+                .with_api_key("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"),
             chats: vec![Chat::default()],
             selected_chat: 0,
             writing: false,
@@ -157,6 +203,10 @@ impl Chats {
 impl Window for Chats {
     type InputReturn = bool;
 
+    fn update_size(&mut self, size: Rect) {
+        self.chat_mut().update_box(size);
+    }
+
     fn draw<B: Backend>(&self, f: &mut Frame<B>) {
         // Divide screen
         let size = f.size();
@@ -166,7 +216,7 @@ impl Window for Chats {
             .constraints(
                 [
                     Constraint::Length(3),
-                    // A chat is 3 lines long
+                    // Make chat take up the remaining space
                     Constraint::Min(3),
                     Constraint::Length(3),
                 ]
@@ -194,39 +244,42 @@ impl Window for Chats {
         let chat = self.chat();
 
         // Display message history
-        // TODO: separate spans to allow for better scrolling maybe
-        let messages: Vec<ListItem> = chat
-            .history
-            .iter()
-            .rev()
-            .map(|message| {
-                let (sender, s_color) = match message.role {
-                    Role::User => ("User", Color::Green),
-                    Role::System => ("System", Color::Yellow),
-                    Role::Assistant => ("ChatGPT", Color::Blue),
+        // TODO: improve
+        let mut messages = vec![];
+        if chat.messages.len() >= 1 {
+            let start = chat
+                .wrapped_messages
+                .len()
+                .saturating_sub(1 + chat.message_offset);
+            let end = start.saturating_sub(chunks[1].height as usize);
+
+            for i in (end..=start).rev() {
+                let item = &chat.wrapped_messages[i];
+
+                let spans = match item {
+                    MessageContent::Sender(role) => {
+                        let (c, color) = match role {
+                            Role::User => ("User", Color::Green),
+                            Role::System => ("System", Color::Yellow),
+                            Role::Assistant => ("ChatGPT", Color::Blue),
+                        };
+                        vec![
+                            Spans::from(vec![Span::styled(
+                                format!("{:<9}", c),
+                                Style::default().fg(color),
+                            )]),
+                            Spans::from(""),
+                        ]
+                    }
+                    MessageContent::Line(line) => vec![Spans::from(line.clone())],
+                    MessageContent::Divider => {
+                        vec![Spans::from("-".repeat(chunks[1].width as usize))]
+                    }
                 };
 
-                let header = Spans::from(vec![
-                    Span::styled(format!("{:<9}", sender), Style::default().fg(s_color)),
-                    // Span::styled(
-                    //     "Date goes here",
-                    //     Style::default().add_modifier(Modifier::ITALIC),
-                    // ),
-                ]);
-
-                let mut items = vec![
-                    Spans::from("-".repeat(chunks[2].width as usize)),
-                    header,
-                    Spans::from(""),
-                ];
-
-                for line in textwrap::wrap(message.content.as_str(), chunks[2].width as usize) {
-                    items.push(Spans::from(line.into_owned()));
-                }
-
-                ListItem::new(items)
-            })
-            .collect();
+                messages.push(ListItem::new(spans))
+            }
+        }
 
         let message_box = List::new(messages)
             .block(Block::default().borders(Borders::ALL).title("Messages"))
@@ -276,10 +329,11 @@ impl Window for Chats {
                 KeyCode::Enter => {
                     if !self.chat().loading && !self.chat().prompt.is_empty() {
                         self.chat_mut().user();
+                        self.writing = false;
                         let model = ChatModel::default()
                             .max_tokens(512u16)
                             .model("gpt-3.5-turbo")
-                            .messages(self.chat().history.clone())
+                            .messages(self.chat().messages.clone())
                             .build()
                             .unwrap();
 
