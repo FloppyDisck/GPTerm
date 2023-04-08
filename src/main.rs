@@ -9,21 +9,25 @@ use crate::{
     settings::Settings,
 };
 use arboard::Clipboard;
+use crossterm::event::poll;
 use crossterm::{
     event::{self, DisableMouseCapture, EnableMouseCapture, Event, KeyCode, KeyEvent},
     execute,
     terminal::{disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen},
 };
 use std::io;
+use std::time::Duration;
 use tui::{
     backend::{Backend, CrosstermBackend},
     layout::{Constraint, Direction, Layout, Rect},
     Frame, Terminal,
 };
 
+// TODO: improve naming on many of these
 pub trait Window {
     type InputReturn;
 
+    // Updates the screen
     fn update<B: Backend>(&mut self, f: &mut Frame<B>) {
         self.update_size(f.size());
         self.draw(f);
@@ -31,7 +35,7 @@ pub trait Window {
     // Handle screen updates, useful when caching
     fn update_size(&mut self, size: Rect) {}
     // Handle the screen writing
-    fn draw<B: Backend>(&self, f: &mut Frame<B>);
+    fn draw<B: Backend>(&self, f: &mut Frame<B>) {}
     // Handle the input handling and processing
     fn input(&mut self, key: &KeyEvent, clipboard: &mut Clipboard) -> Self::InputReturn;
 }
@@ -69,9 +73,12 @@ impl App {
 
         loop {
             terminal.draw(|f| self.update(f)).unwrap();
-            if let Event::Key(key) = event::read()? {
-                if self.input(&key, &mut clipboard) {
-                    break;
+            // TODO setting for this
+            if poll(Duration::from_millis(100))? {
+                if let Event::Key(key) = event::read()? {
+                    if self.input(&key, &mut clipboard) {
+                        break;
+                    }
                 }
             }
         }
@@ -83,19 +90,11 @@ impl App {
 impl Window for App {
     type InputReturn = bool;
 
-    fn update_size(&mut self, size: Rect) {
+    fn update<B: Backend>(&mut self, f: &mut Frame<B>) {
         match &self.view_state {
-            ViewState::Chats => self.chats.update_size(size),
-            ViewState::Settings => self.settings.update_size(size),
-            ViewState::NewChat => self.creator.update_size(size),
-        }
-    }
-
-    fn draw<B: Backend>(&self, f: &mut Frame<B>) {
-        match &self.view_state {
-            ViewState::Chats => self.chats.draw(f),
-            ViewState::Settings => self.settings.draw(f),
-            ViewState::NewChat => self.creator.draw(f),
+            ViewState::Chats => self.chats.update(f),
+            ViewState::Settings => self.settings.update(f),
+            ViewState::NewChat => self.creator.update(f),
         }
     }
 
@@ -193,8 +192,6 @@ fn main() -> Result<(), io::Error> {
     let backend = CrosstermBackend::new(stdout);
     let mut terminal = Terminal::new(backend)?;
 
-    // let mut app = App::new();
-    // app.run(&mut terminal);
     let mut app = App::new();
     app.run(&mut terminal).unwrap();
 

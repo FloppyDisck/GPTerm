@@ -1,4 +1,4 @@
-use crate::prompt::{Prompt, TextPrompt};
+use crate::prompt::{Prompt, StaticPrompt};
 use crate::{popup, Window};
 use arboard::Clipboard;
 use crossterm::event::{KeyCode, KeyEvent};
@@ -23,16 +23,16 @@ pub enum Action {
 /// Chat creation window
 pub struct Creator {
     focus: Focus,
-    title: TextPrompt,
-    system: TextPrompt,
+    title: StaticPrompt,
+    system: StaticPrompt,
 }
 
 impl Creator {
     pub fn new() -> Self {
         Self {
             focus: Focus::Title,
-            title: TextPrompt::new(),
-            system: TextPrompt::new(),
+            title: StaticPrompt::new(),
+            system: StaticPrompt::new(),
         }
     }
 
@@ -45,8 +45,8 @@ impl Creator {
 
     fn reset(&mut self) {
         self.focus = Focus::Title;
-        self.title = TextPrompt::new();
-        self.system = TextPrompt::new();
+        self.title = StaticPrompt::new();
+        self.system = StaticPrompt::new();
     }
 
     fn next(&mut self) {
@@ -56,7 +56,7 @@ impl Creator {
         }
     }
 
-    fn current_prompt(&mut self) -> &mut TextPrompt {
+    fn current_prompt(&mut self) -> &mut StaticPrompt {
         match self.focus {
             Focus::Title => &mut self.title,
             Focus::System => &mut self.system,
